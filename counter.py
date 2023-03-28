@@ -1,22 +1,112 @@
 import argparse
+from os import O_RDONLY
 import time
 from pathlib import Path
-
+import numpy as np
+import psutil
 import cv2
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
-
+from math import sqrt
 from models.experimental import attempt_load
 from utils.datasets import LoadStreams, LoadImages
 from utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
 from utils.plots import plot_one_box
 from utils.torch_utils import select_device, load_classifier, time_synchronized, TracedModel
+import os
+
+
+def counter(founded_people, xyxy, q, top, a):
+    founded_people[f"people{q}"] = [
+        int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])]
+    q = q + 1
+    top = top + xyxy[3] - xyxy[1]
+    a = True
+    # print(founded_people)
+    return founded_people, q, top, a
+
+
+def distance_counter(img, founded_people, top, q, h, plot_box, det, save_img, b, draw):
+    # m = people0 #k = [10, 1.0, 12, 7.5]
+    for ş, (m, k) in enumerate(founded_people.items()):
+        for o, (j, l) in enumerate(founded_people.items()):
+            if not m == j:
+                left_1 = np.array([k[0], k[3]])
+                right_1 = np.array([k[2], k[3]])
+
+                left_2 = np.array([l[0], l[3]])
+                right_2 = np.array([l[2], l[3]])
+
+                check_point1 = right_1 - left_2
+                check_point2 = left_1 - right_2
+                checks1 = sqrt((check_point1[0]**2) + (check_point1[1]**2))
+                checks2 = sqrt((check_point2[0]**2) + (check_point2[1]**2))
+
+                if (checks1 < int((top)/q)/1.2573) or (checks2 < int((top)/q)/1.2573):  # 75
+                    h += 1
+                    plot_box(img, m, j, founded_people)
+
+    cv2.putText(img, f"Close People in Pairs: = {int(h/2)} ",
+                (0, 105), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 10)
+    cv2.putText(img, f"Total Object: = {len(det)}", (0, 255),
+                cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 10)
+
+
+def plot_box(image, m, j, founded_people, color=(0, 0, 225), line_thickness=3):
+    tl = line_thickness or round(
+        0.002 * (image.shape[0] + image.shape[1]) / 2) + 1
+    c1, c2 = (int(founded_people[m][0]), int(founded_people[m][3])), (int(
+        founded_people[m][2]), int(founded_people[m][3]))
+    k1, k2 = (int(founded_people[j][0]), int(founded_people[j][3])), (int(
+        founded_people[j][2]), int(founded_people[j][3]))
+    cv2.rectangle(image, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    cv2.rectangle(image, k1, k2, color, thickness=tl, lineType=cv2.LINE_AA)
+
+
+def save(im0, l, b):
+    bb = im0[int(l[1]):int(l[3]), int(l[0]):int(l[2])]
+    path = "/content/gdrive/MyDrive/yolov7/people_imgs"
+    bb_resized = cv2.resize(bb, (224, 224))
+
+    cv2.imwrite(os.path.join(path, f"people_close{b}.jpg"), bb_resized)
+    b = b + 1
+    return b
+
+
+"""
+def plot_one_box(x, img, color=None, label=None, line_thickness=3):
+    # Plots one bounding box on image img
+    tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
+    color = color or [random.randint(0, 255) for _ in range(3)]
+    c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
+    cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
+    if label:
+        tf = max(tl - 1, 1)  # font thickness
+        t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
+        c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
+        cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
+        cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+"""
+
+
+def count(classes, image):
+    model_values = []
+    aligns = image.shape
+    align_bottom = aligns[0]
+    align_right = (aligns[1]/1.7)
+
+    for i, (k, v) in enumerate(classes.items()):
+        a = f"{k} = {v}"
+        model_values.append(v)
+        align_bottom = align_bottom-35
+        cv2.putText(image, str(a), (int(align_right), align_bottom),
+                    cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 10)
 
 
 def detect(save_img=False):
-    source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
+    source, weights, view_img, save_txt, imgsz, trace, save_img, draw = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace, opt.save_img, opt.draw
     save_img = not opt.nosave and not source.endswith(
         '.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
@@ -31,8 +121,8 @@ def detect(save_img=False):
     # Initialize
     set_logging()
     device = select_device(opt.device)
-    # half = device.type != 'cpu'  # half precision only supported on CUDA
-    half = False
+    half = device.type != 'cpu'  # half precision only supported on CUDA
+
     # Load model
     model = attempt_load(weights, map_location=device)  # load FP32 model
     stride = int(model.stride.max())  # model stride
@@ -70,7 +160,7 @@ def detect(save_img=False):
             next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
-
+    b = 0
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
         img = torch.from_numpy(img).to(device)
@@ -89,8 +179,7 @@ def detect(save_img=False):
 
         # Inference
         t1 = time_synchronized()
-        with torch.no_grad():   # Calculating gradients would cause a GPU memory leak
-            pred = model(img, augment=opt.augment)[0]
+        pred = model(img, augment=opt.augment)[0]
         t2 = time_synchronized()
 
         # Apply NMS
@@ -120,15 +209,26 @@ def detect(save_img=False):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(
                     img.shape[2:], det[:, :4], im0.shape).round()
+                founded_classes = {}
+                founded_people = {}
+                q = 0
+                h = 0
+                a = None
+                top = 0
 
                 # Print results
                 for c in det[:, -1].unique():
                     n = (det[:, -1] == c).sum()  # detections per class
                     # add to string
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
+                    class_index = int(c)
+                    count_of_object = int(n)
+                    founded_classes[names[class_index]] = int(n)
+                    count(classes=founded_classes, image=im0)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
+
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)
                                           ) / gn).view(-1).tolist()  # normalized xywh
@@ -137,11 +237,23 @@ def detect(save_img=False):
                             cls, *xywh, conf) if opt.save_conf else (cls, *xywh)
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                    if cls == 1:
+                        founded_people, q, top, a = counter(
+                            founded_people, xyxy, q, top, a)
+                        """
+                      left_middle = [int(xyxy[0]), int(xyxy[3])]
+                      right_middle = [int(xyxy[2]),int(xyxy[3])]
+
+                      """
 
                     if save_img or view_img:  # Add bbox to image
                         label = f'{names[int(cls)]} {conf:.2f}'
                         plot_one_box(xyxy, im0, label=label,
                                      color=colors[int(cls)], line_thickness=1)
+
+                if a == True:
+                    distance_counter(im0, founded_people, top,
+                                     q, h, plot_box, det, save_img, b, draw)
 
             # Print time (inference + NMS)
             print(
@@ -220,6 +332,10 @@ if __name__ == '__main__':
                         help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true',
                         help='don`t trace model')
+    parser.add_argument('--save_img', default='store_true',
+                        help='Save close people images')
+    parser.add_argument('--draw', default='store_true',
+                        help='Draw Line between close People')
     opt = parser.parse_args()
     print(opt)
     # check_requirements(exclude=('pycocotools', 'thop'))

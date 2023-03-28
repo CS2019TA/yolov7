@@ -37,7 +37,7 @@ def test(data,
          plots=True,
          wandb_logger=None,
          compute_loss=None,
-         half_precision=True,
+         half_precision=False,
          trace=False,
          is_coco=False,
          v5_metric=False):
@@ -58,7 +58,7 @@ def test(data,
         model = attempt_load(weights, map_location=device)  # load FP32 model
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check img_size
-        
+
         if trace:
             model = TracedModel(model, device, imgsz)
 
@@ -92,7 +92,7 @@ def test(data,
 
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
-    
+
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc)
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
